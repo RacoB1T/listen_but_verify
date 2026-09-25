@@ -80,10 +80,6 @@ Built on **MedDG**. Every reliable patient narrative is paired with a biased twi
 produced by one controlled rewrite of the patient side only, so the two differ in
 reporting style but describe the same case.
 
-| Level | Unit | Label field | Train / val / test | Total |
-|---|---|---|---|---|
-| Dialogue | one dialogue variant | `has_misreport` | 7,752 / 1,012 / 928 | 9,692 |
-| Sentence | one target sentence | `has_bias` | 7,270 / 950 / 952 | 9,172 |
 
 Each split is 1:1 positive/negative, and bias is annotated with its type at both levels
 (isolated entity / cross-turn contradiction for dialogues, intensity and inference /
