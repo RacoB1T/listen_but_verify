@@ -44,7 +44,7 @@ Python ≥ 3.9, PyTorch ≥ 2.0, `transformers`, `numpy`, `scikit-learn`, `matpl
 (`accelerate` only for multi-GPU sharding):
 
 ```bash
-git clone https://github.com/RacoB1T/listen_but_verify.git && cd listen_but_verify.git
+git clone https://github.com/RacoB1T/listen_but_verify.git && cd listen_but_verify
 pip install -r requirements.txt
 
 # any Hugging Face causal LM works; the paper uses Qwen3.5-9B-Instruct
