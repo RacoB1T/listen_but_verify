@@ -44,7 +44,7 @@ Python ≥ 3.9, PyTorch ≥ 2.0, `transformers`, `numpy`, `scikit-learn`, `matpl
 (`accelerate` only for multi-GPU sharding):
 
 ```bash
-git clone <this-repo> && cd <this-repo>
+git clone https://github.com/RacoB1T/listen_but_verify.git && cd listen_but_verify.git
 pip install -r requirements.txt
 
 # any Hugging Face causal LM works; the paper uses Qwen3.5-9B-Instruct
@@ -76,31 +76,20 @@ they are **not** results.
 
 ## Data
 
-Derived from **MedDG** (Chinese medical dialogues). For every reliable patient narrative
-`x_r`, one controlled transformation `T_b` rewrites **only the patient side** and yields a
-biased twin `x_b = T_b(x_r)`; the original text is kept as its own reliable counterpart.
-Samples were filtered by LLM self-consistency and reviewed by three annotators
-(artifact rate 0.02, Fleiss' κ 0.892).
+Built on **MedDG**. Every reliable patient narrative is paired with a biased twin
+produced by one controlled rewrite of the patient side only, so the two differ in
+reporting style but describe the same case.
 
 | Level | Unit | Label field | Train / val / test | Total |
 |---|---|---|---|---|
 | Dialogue | one dialogue variant | `has_misreport` | 7,752 / 1,012 / 928 | 9,692 |
 | Sentence | one target sentence | `has_bias` | 7,270 / 950 / 952 | 9,172 |
 
-Both levels are 1:1 positive/negative in every split, and splits are grouped by
-`dialog_key` / `sentence_key`, so no case appears in two splits.
-
-Four bias types are annotated:
-
-| Level | Bias family | Field |
-|---|---|---|
-| Dialogue | isolated entity introduction | `error_family = isolated_entity` |
-| Dialogue | cross-turn contradiction (symptom / time / severity-frequency) | `error_family = contradiction`, `contradiction_type` |
-| Sentence | intensity and inference bias (4 sub-types) | `bias_family = intensity`, `intensity_type` |
-| Sentence | vagueness and intra-sentence conflict (2 sub-types) | `bias_family = ambiguity`, `ambiguity_type` |
-
-Full field-by-field schema, per-sub-type counts and the prompt format are documented in
-[`data/README.md`](data/README.md).
+Each split is 1:1 positive/negative, and bias is annotated with its type at both levels
+(isolated entity / cross-turn contradiction for dialogues, intensity and inference /
+vagueness for sentences) in fields such as `error_family`, `contradiction_type`,
+`bias_family`, `intensity_type` and `ambiguity_type` — see the JSONL files for the exact
+schema and per-type counts.
 
 ---
 
