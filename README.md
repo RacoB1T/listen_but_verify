@@ -23,9 +23,8 @@ LLM-based medical dialogue systems often implicitly assume that patients can acc
 │   ├── probe_utils.py            # shared utilities: IO, prompts, data, frozen LLM, metrics
 │   ├── 01_extract_features.py    # step 1 – layer-wise hidden states of a frozen LLM
 │   ├── 02_probe.py               # step 2 – train one linear probe per layer, select l*, test
-│   ├── 03_prompt_baseline.py     # step 3 – zero-shot prompting baseline (same prompt, same LLM)
-│   ├── 04_report.py              # step 4 – tables, layer curves, per-sub-type AUROC
-│   └── run.sh                    # one-command pipeline (all four steps)
+│   ├── 03_report.py              # step 3 – summary.json, layer curves, per-sub-type AUROC
+│   └── run.sh                    # one-command pipeline (all three steps)
 ├── data/
 │   ├── dialogue/{train,val,test}.jsonl
 │   └── sentence/{train,val,test}.jsonl
@@ -58,15 +57,15 @@ Point the code at the weights with `--model_path`, the `MODEL=` variable, or
 
 ## Quick start
 
-A full run needs a GPU and a few hours (see [Runtime](#runtime)). To check the
-installation in minutes, run the smoke configuration on CPU with a small backbone:
+A full run needs a GPU and a few hours — feature extraction dominates; probe training is
+CPU-only and takes minutes. To check the installation quickly, run the smoke
+configuration on CPU with a small backbone:
 
 ```bash
 cd code
-SMOKE=1 LIMIT=8 MODEL=/models/Qwen3.5-0.8B DEVICE=cpu DTYPE=float32 BATCH=4 \
-  WITH_PROMPT=1 bash run.sh
+SMOKE=1 LIMIT=8 MODEL=/models/Qwen3.5-0.8B DEVICE=cpu DTYPE=float32 BATCH=4 bash run.sh
 
-cat ../results_smoke/summary.md
+cat ../results_smoke/summary.json
 ```
 
 Smoke runs read and write `results_smoke/` and only prove that the pipeline works —
@@ -80,6 +79,10 @@ Built on **MedDG**. Every reliable patient narrative is paired with a biased twi
 produced by one controlled rewrite of the patient side only, so the two differ in
 reporting style but describe the same case.
 
+| Level | Unit | Label field | Train / val / test | Total |
+|---|---|---|---|---|
+| Dialogue | one dialogue variant | `has_misreport` | 7,752 / 1,012 / 928 | 9,692 |
+| Sentence | one target sentence | `has_bias` | 7,270 / 950 / 952 | 9,172 |
 
 Each split is 1:1 positive/negative, and bias is annotated with its type at both levels
 (isolated entity / cross-turn contradiction for dialogues, intensity and inference /
@@ -96,7 +99,7 @@ schema and per-type counts.
 ```bash
 cd code
 MODEL=/models/Qwen3.5-9B-Instruct bash run.sh                       # both levels
-MODEL=/models/Qwen3.5-9B-Instruct WITH_PROMPT=1 bash run.sh        # + prompting baseline
+MODEL=/models/Qwen3.5-9B-Instruct LEVELS="sentence" bash run.sh    # one level only
 ```
 
 Environment variables: `MODEL`, `LEVELS`, `OUT_DIR`, `BATCH`, `MAX_LEN`, `DTYPE`,
@@ -111,8 +114,7 @@ export MODEL=/models/Qwen3.5-9B-Instruct
 
 python 01_extract_features.py --levels dialogue sentence --model_path $MODEL --batch_size 8
 python 02_probe.py --levels dialogue sentence                       # CPU is fine
-python 03_prompt_baseline.py --levels dialogue sentence --model_path $MODEL   # optional
-python 04_report.py
+python 03_report.py
 ```
 
 ### Multi-GPU
@@ -139,8 +141,8 @@ Everything lands in `results/` (`--out_dir` / `OUT_DIR=` to change it):
 
 ```
 results/
-├── summary.md / summary.csv             # the result table of this run (start here)
-├── summary_all.json                     # machine-readable aggregate
+├── summary.json                         # the result file of this run (start here)
+├── summary_<level>.json                 # the same, per level
 ├── per_layer_test_<level>.csv           # ACC / F1 / AUROC of every layer on the test split
 ├── subtype_auroc_<level>.{csv,png}      # probe AUROC per bias sub-type
 ├── layer_curve_<level>.png              # layer-wise curves with l* marked
@@ -150,9 +152,36 @@ results/
     ├── probe.json                       # per-layer val metrics, l*, test metrics (+CI), hparams
     ├── per_layer.csv                    # the same per-layer table as CSV
     ├── probe_ckpt.pt / test_scores.npz  # l* weights and test probabilities
-    ├── layer_curve_<level>.png          # written by step 2
-    ├── prompt_test.json                 # prompting baseline (only with step 3)
-    └── prompt_predictions_<level>_test.jsonl
+    └── layer_curve_<level>.png          # written by step 2
+```
+
+`summary.json` is a single JSON document; the headline numbers are in `runs`, the
+details per level under `levels`:
+
+```jsonc
+{
+  "generated_at": "2026-01-01 12:00:00",
+  "backbone": "/models/Qwen3.5-9B-Instruct",
+  "features": {"pooling": "last", "max_length": 1536, "input_mode": "task"},
+  "runs": [                                   // one flat row per level – feed straight to pandas
+    {"level": "dialogue", "method": "linear_probe", "layer": 31, "n_test": 928,
+     "accuracy": 0.7004, "precision": 0.7330, "recall": 0.5837, "f1": 0.6499,
+     "auroc": 0.7578, "accuracy_ci95": [...], "f1_ci95": [...], "auroc_ci95": [...]}
+  ],
+  "levels": {
+    "dialogue": {
+      "split_sizes":     {"train": 7752, "val": 1012, "test": 928},
+      "layer_selection": {"criterion": "val_acc", "best_layer": 31,
+                          "best_layer_val_acc": 0.7045, "best_layer_val_auroc": 0.7875},
+      "probe":           {"accuracy": 0.7004, "f1": 0.6499, "auroc": 0.7578,
+                          "confusion_matrix": {"tp": 258, "tn": 392, "fp": 94, "fn": 184}},
+      "probe_hparams":   {...},
+      "per_layer":       [{"layer": 0, "val_acc": ..., "test_auroc": ...}, ...],
+      "subtype_auroc":   [{"subtype": "isolated_entity", "n_pos": 250, "auroc": ...}, ...]
+    },
+    "sentence": { ... }
+  }
+}
 ```
 
 ---

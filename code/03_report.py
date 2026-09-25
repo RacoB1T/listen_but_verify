@@ -1,35 +1,57 @@
 # -*- coding: utf-8 -*-
 """
-Aggregate the probe outputs into tables and figures.
+Step 3 of 3 – aggregate the probe outputs into one JSON summary (plus figures).
 
-Reads everything the first three steps produced and writes to ``{out}/``:
+Reads what the first two steps produced and writes to ``{out}/``:
 
-    summary.md / summary.csv            the paper's Table 1 block for this run
+    summary.json                        the single result file of this run
     per_layer_test_<level>.csv          ACC / F1 / AUROC of *every* layer on the test split
     subtype_auroc_<level>.csv           probe AUROC per bias sub-type
     subtype_auroc_<level>.png           the same as a bar chart
     layer_curve_<level>.png             validation & test curves with l* marked
 
+``summary.json`` layout::
+
+    {
+      "generated_at": "...", "config": "...", "backbone": "...",
+      "features": {"pooling": "last", "max_length": 1536, "input_mode": "task"},
+      "runs": [                                # one flat row per level
+        {"level": "dialogue", "method": "linear_probe", "layer": 31, "n_test": 928,
+         "accuracy": ..., "f1": ..., "auroc": ..., "accuracy_ci95": [...], ...}
+      ],
+      "levels": {
+        "dialogue": {
+          "level_name": "Dialogue level",
+          "split_sizes": {"train": 7752, "val": 1012, "test": 928},
+          "layer_selection": {"criterion": "val_acc", "best_layer": 31, ...},
+          "probe":          {"accuracy": ..., "confusion_matrix": {...}, ...},
+          "probe_hparams":  {...},
+          "per_layer":      [{"layer": .., "val_acc": .., "test_auroc": ..}, ...],
+          "subtype_auroc":  [{"subtype": .., "n_pos": .., "auroc": ..}, ...]
+        },
+        "sentence": {...}
+      }
+    }
+
 The sub-type breakdown uses each positive sample's own bias category
 (``error_family`` / ``contradiction_type`` at dialogue level,
 ``bias_family`` / ``ambiguity_type`` / ``intensity_type`` at sentence level)
-against all clean negatives, i.e. the fine-grained analysis mentioned in the
-paper (Sec. 3.2, "characterise different bias categories").
+against all clean negatives.
 
 Examples
 --------
-    python 04_report.py
-    python 04_report.py --levels dialogue
+    python 03_report.py
+    python 03_report.py --levels dialogue
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -39,7 +61,7 @@ import probe_utils as U  # noqa: E402
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Aggregate the probe results")
+    ap = argparse.ArgumentParser(description="Aggregate the probe results into summary.json")
     ap.add_argument("--config", default=os.path.join(_HERE, "probe_config.json"))
     ap.add_argument("--levels", nargs="+", default=None)
     ap.add_argument("--out_dir", default="")
@@ -49,9 +71,9 @@ def parse_args():
 
 
 # -------------------------------------------------------------------------
-# Romanised sub-type names for the figures.  The CSV/Markdown tables keep the
-# original Chinese sub-type names; charts use ASCII labels only, because the
-# default matplotlib fonts have no CJK glyphs and would render empty boxes.
+# Romanised sub-type names for the figures only: ``summary.json`` keeps the
+# original names, while charts use ASCII labels because the default matplotlib
+# fonts have no CJK glyphs and would render empty boxes.
 PLOT_LABELS = {
     "isolated_entity": "isolated entity",
     "contradiction:symptom_yes_no": "contradiction:\nsymptom yes/no",
@@ -68,20 +90,6 @@ PLOT_LABELS = {
 
 def plot_label(subtype: str) -> str:
     return PLOT_LABELS.get(subtype, subtype.replace(":", ":\n"))
-
-
-def fnum(x: Any, nd: int = 4) -> str:
-    if x is None:
-        return "—"
-    if isinstance(x, float):
-        return f"{x:.{nd}f}"
-    return str(x)
-
-
-def ci(pair: Optional[List[float]], nd: int = 3) -> str:
-    if not pair:
-        return "—"
-    return f"[{pair[0]:.{nd}f},{pair[1]:.{nd}f}]"
 
 
 def subtype_table(cfg: Dict[str, Any], level: str, fdir: str) -> List[Dict[str, Any]]:
@@ -182,6 +190,26 @@ def plot_curve(rows: List[Dict[str, Any]], test_rows: List[Dict[str, Any]], best
         print(f"[warn] could not draw {png}: {e}")
 
 
+def merge_per_layer(rows: List[Dict[str, Any]],
+                    test_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One entry per layer with the validation and test metrics side by side."""
+    test_by_layer = {int(r["layer"]): r for r in (test_rows or [])}
+    out = []
+    for r in rows or []:
+        layer = int(r["layer"])
+        t = test_by_layer.get(layer, {})
+        out.append({
+            "layer": layer,
+            "feature_index": r.get("feature_index", layer),
+            "val_acc": r.get("val_acc"), "val_precision": r.get("val_precision"),
+            "val_recall": r.get("val_recall"), "val_f1": r.get("val_f1"),
+            "val_auroc": r.get("val_auroc"),
+            "test_acc": t.get("test_acc"), "test_f1": t.get("test_f1"),
+            "test_auroc": t.get("test_auroc"),
+        })
+    return out
+
+
 # -------------------------------------------------------------------------
 def main() -> None:
     args = parse_args()
@@ -192,8 +220,15 @@ def main() -> None:
         cfg["out_dir"] = cfg.get("smoke_out_dir", cfg["out_dir"] + "_smoke")
     levels = args.levels or U.levels_of(cfg)
 
-    summary: Dict[str, Any] = {"levels": {}, "backbone": None, "settings": {}}
-    md: List[str] = ["# Patient reporting bias detection", ""]
+    summary: Dict[str, Any] = {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "config": cfg["_config_path"],
+        "out_dir": os.path.abspath(cfg["out_dir"]),
+        "levels": {},
+        "backbone": None,
+        "features": {},
+        "runs": [],
+    }
 
     for level in levels:
         fdir = U.out_dir(cfg, level)
@@ -203,40 +238,54 @@ def main() -> None:
             continue
         res = U.load_json(probe_path)
         level_name = res.get("level_name", level)
+        data_meta = res.get("data") or {}
+        test = res.get("test") or {}
         summary["backbone"] = summary["backbone"] or res.get("model_features")
-        if not summary["settings"] and res.get("data"):
-            summary["settings"] = res["data"]
-
-        prompt: Dict[str, Any] = {}
-        for split, fname in (("test", "prompt_test.json"), ("test", "prompt.json")):
-            p = os.path.join(fdir, fname)
-            if os.path.exists(p):
-                prompt = U.load_json(p)
-                break
+        if not summary["features"]:
+            summary["features"] = {k: data_meta.get(k)
+                                   for k in ("pooling", "max_length", "input_mode")}
 
         sub = subtype_table(cfg, level, fdir)
         test_rows = res.get("per_layer_test") or []
+        per_layer = merge_per_layer(res.get("per_layer") or [], test_rows)
 
-        summary["levels"][level] = {
+        entry = {
             "level_name": level_name,
             "backbone": res.get("model_features"),
-            "n_train": res["data"]["n_train"], "n_val": res["data"]["n_val"],
-            "n_test": res["data"]["n_test"],
-            "select_by": res.get("select_by"),
-            "best_layer": res.get("best_layer"),
-            "best_layer_val_acc": res.get("best_layer_val_acc"),
-            "best_layer_val_auroc": res.get("best_layer_val_auroc"),
-            "mean_val_acc_over_layers": res.get("mean_val_acc_over_layers"),
-            "gain_over_mean_val_acc": res.get("gain_over_mean_val_acc"),
-            "probe_test": res.get("test"),
-            "prompt_test_generate": (prompt.get("test_generate") if prompt else None),
-            "prompt_test_score": (prompt.get("test_score") if prompt else None),
-            "prompt_n_parse_fail": (prompt.get("n_parse_fail") if prompt else None),
-            "per_layer_test": test_rows,
+            "probe_json": probe_path,
+            "split_sizes": {"train": data_meta.get("n_train"), "val": data_meta.get("n_val"),
+                            "test": data_meta.get("n_test")},
+            "layer_selection": {
+                "criterion": res.get("select_by"),
+                "best_layer": res.get("best_layer"),
+                "best_layer_feature_index": res.get("best_layer_feature_index"),
+                "best_layer_val_acc": res.get("best_layer_val_acc"),
+                "best_layer_val_auroc": res.get("best_layer_val_auroc"),
+                "mean_val_acc_over_layers": res.get("mean_val_acc_over_layers"),
+                "gain_over_mean_val_acc": res.get("gain_over_mean_val_acc"),
+            },
+            # the selected probe, evaluated once on the held-out test split
+            "probe": res.get("test"),
+            "probe_hparams": res.get("probe_hparams"),
+            "per_layer": per_layer,
             "subtype_auroc": sub,
         }
-        U.save_json(os.path.join(cfg["out_dir"], f"summary_{level}.json"),
-                    summary["levels"][level])
+        summary["levels"][level] = entry
+        summary["runs"].append({
+            "level": level, "level_name": level_name,
+            "method": "linear_probe", "layer": res.get("best_layer"),
+            "n_test": test.get("n"),
+            "accuracy": test.get("accuracy"),
+            "precision": test.get("precision"),
+            "recall": test.get("recall"),
+            "f1": test.get("f1"),
+            "auroc": test.get("auroc"),
+            "accuracy_ci95": test.get("accuracy_ci95"),
+            "f1_ci95": test.get("f1_ci95"),
+            "auroc_ci95": test.get("auroc_ci95"),
+        })
+
+        U.save_json(os.path.join(cfg["out_dir"], f"summary_{level}.json"), entry)
 
         # ---- per-layer test csv ----
         if test_rows:
@@ -262,81 +311,12 @@ def main() -> None:
                    os.path.join(cfg["out_dir"], f"layer_curve_{level}.png"),
                    f"{level_name}: layer-wise bias detection")
 
-        # ---- markdown block ----
-        t = res["test"]
-        md += [f"## {level_name}", "",
-               f"- test samples: **{res['data']['n_test']}** "
-               f"(train {res['data']['n_train']} / val {res['data']['n_val']}); "
-               f"backbone `{os.path.basename(str(res.get('model_features')))}`; "
-               f"pooling `{res['data'].get('pooling')}`, max_length `{res['data'].get('max_length')}`",
-               f"- selected layer **l\\* = {res.get('best_layer')}** "
-               f"(by `{res.get('select_by')}`; val ACC {fnum(res.get('best_layer_val_acc'))}, "
-               f"val AUROC {fnum(res.get('best_layer_val_auroc'))})",
-               f"- mean validation ACC over all layers: "
-               f"{fnum(res.get('mean_val_acc_over_layers'))} "
-               f"→ gain of l\\*: {fnum(res.get('gain_over_mean_val_acc'))}",
-               "", "| Method | ACC | Precision | Recall | F1 | AUROC |", "|---|---|---|---|---|---|",
-               f"| Linear probe (ours, l\\*={res.get('best_layer')}) | {fnum(t['accuracy'])} | "
-               f"{fnum(t['precision'])} | {fnum(t['recall'])} | {fnum(t['f1'])} | "
-               f"{fnum(t.get('auroc'))} |"]
-        if prompt and prompt.get("test_generate"):
-            g = prompt["test_generate"]
-            md.append(f"| Prompt classifier (zero-shot) | {fnum(g['accuracy'])} | "
-                      f"{fnum(g['precision'])} | {fnum(g['recall'])} | {fnum(g['f1'])} | "
-                      f"{fnum(g.get('auroc'))} |")
-        if prompt and prompt.get("test_score"):
-            s = prompt["test_score"]
-            md.append(f"| Prompt classifier (logit score) | {fnum(s['accuracy'])} | "
-                      f"{fnum(s['precision'])} | {fnum(s['recall'])} | {fnum(s['f1'])} | "
-                      f"{fnum(s.get('auroc'))} |")
-        md += ["",
-               f"95% bootstrap CIs (1000 resamples): ACC {ci(t.get('accuracy_ci95'))}, "
-               f"F1 {ci(t.get('f1_ci95'))}, AUROC {ci(t.get('auroc_ci95'))}. "
-               f"Confusion matrix: {t['confusion_matrix']}."]
-        if prompt:
-            md.append(f"Prompt baseline JSON parse failures: {prompt.get('n_parse_fail')}.")
-        if sub:
-            md += ["", "Probe AUROC per bias sub-type (sub-type positives vs all clean negatives):",
-                   "", "| Sub-type | #pos | AUROC |", "|---|---|---|"]
-            for r in sub:
-                md.append(f"| {r['subtype']} | {r['n_pos']} | {fnum(r['auroc'])} |")
-        md.append("")
+        print(f"  {level_name}: l*={res.get('best_layer')} n_test={test.get('n')} "
+              f"ACC={test.get('accuracy')} F1={test.get('f1')} AUROC={test.get('auroc')}")
 
-    # ---- global csv/markdown ----
-    keys = ["level", "method", "layer", "n_test", "acc", "acc_ci", "precision", "recall", "f1",
-            "f1_ci", "auroc", "auroc_ci"]
-    csv_path = os.path.join(cfg["out_dir"], "summary.csv")
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(keys)
-        for level, d in summary["levels"].items():
-            for method, m, layer in (("linear_probe", d["probe_test"], d["best_layer"]),
-                                     ("prompt_generate", d["prompt_test_generate"], ""),
-                                     ("prompt_score", d["prompt_test_score"], "")):
-                if not m:
-                    continue
-                w.writerow([d["level_name"], method, layer, m.get("n"),
-                            m.get("accuracy"), ci(m.get("accuracy_ci95")),
-                            m.get("precision"), m.get("recall"), m.get("f1"),
-                            ci(m.get("f1_ci95")), m.get("auroc"), ci(m.get("auroc_ci95"))])
-
-    header = ["# Patient reporting bias detection (auto-generated)", "",
-              f"Backbone: `{summary['backbone']}`  ",
-              f"Features: pooling `{summary['settings'].get('pooling')}`, "
-              f"max_length `{summary['settings'].get('max_length')}`, "
-              f"input mode `{summary['settings'].get('input_mode')}`  ",
-              "Metrics on the held-out test split. The probe probability is the "
-              "sigmoid output at threshold 0.5; the prompt-classifier AUROC comes from the "
-              "0/1 logit score (threshold-free).", ""]
-    with open(os.path.join(cfg["out_dir"], "summary.md"), "w", encoding="utf-8") as f:
-        f.write("\n".join(header + md))
-    U.save_json(os.path.join(cfg["out_dir"], "summary_all.json"), summary)
-
-    print(f"[ok] wrote {os.path.join(cfg['out_dir'], 'summary.md')} and summary.csv")
-    for level, d in summary["levels"].items():
-        t = d["probe_test"]
-        print(f"  {d['level_name']:16s} l*={d['best_layer']:<3} ACC={fnum(t['accuracy'])} "
-              f"F1={fnum(t['f1'])} AUROC={fnum(t.get('auroc'))}")
+    json_path = os.path.join(cfg["out_dir"], "summary.json")
+    U.save_json(json_path, summary)
+    print(f"[ok] wrote {json_path}")
 
 
 if __name__ == "__main__":

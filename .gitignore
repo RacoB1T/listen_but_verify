@@ -16,7 +16,6 @@ results_*/
 done.txt
 truncated.txt
 per_layer_*.jsonl
-prompt_predictions_*.jsonl
 
 # hidden-state caches are large and fully reproducible from the data + backbone
 *.npz
