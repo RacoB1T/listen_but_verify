@@ -1,0 +1,80 @@
+{
+  "_comment": [
+    "Configuration for the patient-reporting-bias probe of",
+    "'Listen, but Verify: Detecting Patient Reporting Bias in Medical Dialogue LLMs'.",
+    "Paths are resolved relative to this repository; the only external artefact is",
+    "the frozen backbone (Qwen3.5-9B-Instruct) that you point --model_path at."
+  ],
+
+  "data_dir": "../data",
+  "out_dir": "../results",
+  "smoke_out_dir": "../results_smoke",
+  "splits": ["train", "val", "test"],
+  "levels": ["dialogue", "sentence"],
+  "seed": 42,
+
+  "model_path": "/path/to/Qwen3.5-9B-Instruct",
+  "device": "cuda:0",
+  "device_map": "",
+  "dtype": "float16",
+  "max_length": 1536,
+  "batch_size": 8,
+  "pooling": "last",
+  "input_mode": "task",
+  "prompt_style": "chat",
+  "enable_thinking": false,
+  "max_memory": {},
+
+  "dialog_format": {
+    "include_role": true,
+    "normalize_whitespace": true
+  },
+
+  "probe": {
+    "lr": 0.001,
+    "batch_size": 32,
+    "epochs": 20,
+    "weight_decay": 0.0,
+    "standardize": true,
+    "threshold": 0.5,
+    "layer_selection": "val_acc"
+  },
+
+  "prompt_classifier": {
+    "max_new_tokens": 256,
+    "batch_size": 8,
+    "do_generate": true,
+    "do_score": true
+  },
+
+  "tasks": {
+    "dialogue": {
+      "display_name": "Dialogue level",
+      "data_subdir": "dialogue",
+      "out_subdir": "dialogue_probe",
+      "label_field": "has_misreport",
+      "pred_field": "has_misreport",
+      "prompt": {
+        "system": "你是医学对话数据评测助手。你的任务是判断给定完整医患对话中患者报告是否存在偏差/误导。你必须严格输出JSON对象，不允许输出任何多余文字。",
+        "template": "请判断下面对话中患者报告是否存在偏差/误导（misreport）。\n\n只输出严格JSON，且只能包含字段：has_misreport，输出格式为{{\"has_misreport\": 0}}。\n- has_misreport 只能是 0 或 1。\n\n对话如下：\n{DIALOG}\n"
+      }
+    },
+    "sentence": {
+      "display_name": "Sentence level",
+      "data_subdir": "sentence",
+      "out_subdir": "sentence_probe",
+      "label_field": "has_bias",
+      "pred_field": "has_bias",
+      "prompt": {
+        "system": "你是医学对话数据评测助手。你的任务是根据完整医患对话上下文和指定目标句，判断该目标句是否存在患者报告偏差。你必须严格输出JSON对象，不允许输出任何多余文字。",
+        "template": "请判断下面给定的目标句是否存在患者报告偏差。\n\n只输出严格JSON，且只能包含字段：has_bias，输出格式为{{\"has_bias\": 0}}。\n- has_bias 只能是 0 或 1。\n\n完整对话如下：\n{DIALOG}\n\n目标句: {TARGET_SENTENCE}\n"
+      }
+    }
+  },
+
+  "smoke": {
+    "limit_train": 200,
+    "limit_val": 100,
+    "limit_test": 100
+  }
+}

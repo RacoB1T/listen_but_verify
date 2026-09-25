@@ -1,0 +1,20 @@
+# Core dependencies for the patient-reporting-bias probe.
+# Tested with Python 3.10, PyTorch 2.10 (CUDA 12.8) and Transformers 5.3.
+#
+# A CUDA build of PyTorch is strongly recommended for step 01 (feature extraction);
+# steps 02 and 04 are pure CPU.  Install torch first, following the selector on
+# https://pytorch.org/get-started/locally/ if you need a specific CUDA version, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+torch>=2.0
+transformers>=4.40
+numpy>=1.24
+scikit-learn>=1.2
+matplotlib>=3.6
+
+# optional -------------------------------------------------------------------
+# accelerate is only needed for multi-GPU sharding with --device_map
+accelerate>=0.26
+
+# huggingface_hub is only needed to download the backbone weights
+huggingface_hub>=0.20

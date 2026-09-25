@@ -1,0 +1,30 @@
+# ---- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- experiment artefacts ---------------------------------------------------
+# everything the pipeline writes lives under results/ (or results_smoke/)
+results/
+results_smoke/
+results_*/
+!results/.gitkeep
+*_shards_*/
+done.txt
+truncated.txt
+per_layer_*.jsonl
+prompt_predictions_*.jsonl
+
+# hidden-state caches are large and fully reproducible from the data + backbone
+*.npz
+*.pt
+*.ckpt
+
+# ---- editors / OS -----------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+*.swp
