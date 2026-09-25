@@ -27,7 +27,6 @@ LLM-based medical dialogue systems often implicitly assume that patients can acc
 │   ├── 04_report.py              # step 4 – tables, layer curves, per-sub-type AUROC
 │   └── run.sh                    # one-command pipeline (all four steps)
 ├── data/
-│   ├── README.md                 # data statement: schema, statistics, provenance
 │   ├── dialogue/{train,val,test}.jsonl
 │   └── sentence/{train,val,test}.jsonl
 └── results/                      # empty; every artefact is written here
